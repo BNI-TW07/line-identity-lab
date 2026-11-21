@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>身分綁定</title>
+<style>
+  body { margin: 0; font-family: system-ui, -apple-system, "Noto Sans TC", sans-serif; background: #f4f6f8; color: #222; }
+  main { max-width: 420px; margin: 0 auto; padding: 24px 20px; }
+  h1 { font-size: 22px; margin: 0 0 16px; }
+  .msg { min-height: 1.4em; padding: 12px; border-radius: 8px; background: #fff; line-height: 1.5; }
+  .msg.err { background: #fdecea; color: #a12622; }
+  .msg.ok { background: #e7f6ec; color: #1d6b38; }
+  section { margin-top: 20px; background: #fff; padding: 16px; border-radius: 12px; }
+  label { display: block; margin-bottom: 8px; font-size: 15px; }
+  input { width: 100%; box-sizing: border-box; font-size: 18px; padding: 12px; border: 1px solid #ccc; border-radius: 8px; }
+  button { width: 100%; margin-top: 12px; font-size: 17px; padding: 12px; border: 0; border-radius: 8px; background: #06c755; color: #fff; }
+  button:disabled { opacity: .5; }
+  button.link { background: none; color: #555; text-decoration: underline; }
+  button.danger { background: #d93025; }
+</style>
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script src="config.js"></script>
+</head>
+<body>
+<main>
+  <h1>會員身分綁定</h1>
+  <p id="msg" class="msg">載入中…</p>
+
+  <section id="vEmail" hidden>
+    <label for="email">請輸入您在會員名單上的 Email</label>
+    <input id="email" type="email" inputmode="email" autocomplete="email">
+    <button id="btnSend">寄送驗證碼</button>
+  </section>
+
+  <section id="vCode" hidden>
+    <label for="code">請輸入信中的 6 位數驗證碼</label>
+    <input id="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code">
+    <button id="btnVerify">完成綁定</button>
+    <button id="btnBack" class="link">重新輸入 Email</button>
+  </section>
+
+  <section id="vBound" hidden>
+    <p>目前綁定：<b id="who"></b></p>
+    <button id="btnUnbind" class="danger">解除綁定</button>
+  </section>
+</main>
+
+<script>
+const C = window.APP_CONFIG;
+const $ = (id) => document.getElementById(id);
+const ERR = {
+  EMAIL_FORMAT: 'Email 格式不正確。',
+  COOLDOWN: '請等 60 秒後再重新寄送。',
+  TOO_MANY: '寄送次數過多，請稍後再試。',
+  MAIL_QUOTA: '今日寄信額度已滿，請明天再試或聯絡管理員。',
+  CODE_EXPIRED: '驗證碼已過期或不存在，請重新寄送。',
+  CODE_WRONG: '驗證碼錯誤。',
+  TOO_MANY_TRIES: '錯誤次數過多，驗證碼已作廢，請重新寄送。',
+  AUTH_FAILED: '身分驗證失敗或已逾時，請關閉此頁面後從 LINE 重新開啟。',
+  SERVER_ERROR: '系統錯誤，請稍後再試。'
+};
+
+function say(text, type) {
+  $('msg').textContent = text;
+  $('msg').className = 'msg' + (type ? ' ' + type : '');
+}
+function show(view) {
+  ['vEmail', 'vCode', 'vBound'].forEach((v) => { $(v).hidden = (v !== view); });
+}
+function busy(on) {
+  document.querySelectorAll('button').forEach((b) => { b.disabled = on; });
+}
+function errText(r) {
+  let t = ERR[r.error] || ('發生錯誤：' + r.error);
+  if (r.error === 'CODE_WRONG' && r.remaining !== undefined) t += '還可以再試 ' + r.remaining + ' 次。';
+  return t;
+}
+
+async function api(action, data) {
+  busy(true);
+  try {
+    const res = await fetch(C.GAS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // 避免 CORS 預檢
+      body: JSON.stringify(Object.assign({ action: action, idToken: liff.getIDToken() }, data || {}))
+    });
+    return await res.json();
+  } catch (e) {
+    return { ok: false, error: 'SERVER_ERROR' };
+  } finally {
+    busy(false);
+  }
+}
+
+async function refresh(okText) {
+  const r = await api('status');
+  if (!r.ok) { say(errText(r), 'err'); return; }
+  if (r.bound) {
+    $('who').textContent = r.name;
+    show('vBound');
+    say(okText || '您已完成綁定。', 'ok');
+  } else {
+    show('vEmail');
+    say(okText || '請輸入 Email，我們會寄送驗證碼給您。');
+  }
+}
+
+$('btnSend').onclick = async () => {
+  const r = await api('requestCode', { email: $('email').value });
+  if (!r.ok) { say(errText(r), 'err'); return; }
+  $('code').value = '';
+  show('vCode');
+  say('若此 Email 為在籍會員的信箱，驗證碼已寄出，10 分鐘內有效。');
+};
+
+$('btnVerify').onclick = async () => {
+  const r = await api('verifyCode', { code: $('code').value });
+  if (!r.ok) {
+    say(errText(r), 'err');
+    if (r.error === 'CODE_EXPIRED' || r.error === 'TOO_MANY_TRIES') show('vEmail');
+    return;
+  }
+  refresh('綁定完成！回到 LINE 點選單就能查詢自己的資料。');
+};
+
+$('btnBack').onclick = () => { show('vEmail'); say('請輸入 Email。'); };
+
+$('btnUnbind').onclick = async () => {
+  if (!confirm('確定要解除綁定嗎？')) return;
+  const r = await api('unbind');
+  if (!r.ok) { say(errText(r), 'err'); return; }
+  refresh('已解除綁定。');
+};
+
+liff.init({ liffId: C.LIFF_ID })
+  .then(() => {
+    if (!liff.isLoggedIn()) { liff.login(); return; }
+    if (!liff.getIDToken()) { say('無法取得身分資訊，請確認 LIFF 已勾選 openid。', 'err'); return; }
+    refresh();
+  })
+  .catch((e) => say('LIFF 初始化失敗：' + e.message, 'err'));
+</script>
+</body>
+</html>
