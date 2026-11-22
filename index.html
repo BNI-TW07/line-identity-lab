@@ -49,6 +49,25 @@
 <script>
 const C = window.APP_CONFIG;
 const $ = (id) => document.getElementById(id);
+
+// 一般瀏覽器（電腦）會沿用舊的登入資訊，憑證可能已過期：過期就重新登入
+function tokenExpired() {
+  const d = liff.getDecodedIDToken();
+  return !d || d.exp * 1000 < Date.now() + 60000;
+}
+function relogin() {
+  liff.logout();
+  liff.login({ redirectUri: location.href });
+}
+function reloginOnce() { // 後端仍判定失敗時，只自動重試一次，避免無限循環
+  if (liff.isInClient()) return false;
+  try {
+    if (sessionStorage.getItem('relogin')) return false;
+    sessionStorage.setItem('relogin', '1');
+  } catch (e) { return false; }
+  relogin();
+  return true;
+}
 const ERR = {
   EMAIL_FORMAT: 'Email 格式不正確。',
   COOLDOWN: '請等 60 秒後再重新寄送。',
@@ -58,7 +77,8 @@ const ERR = {
   CODE_WRONG: '驗證碼錯誤。',
   TOO_MANY_TRIES: '錯誤次數過多，驗證碼已作廢，請重新寄送。',
   AUTH_FAILED: '身分驗證失敗或已逾時，請關閉此頁面後從 LINE 重新開啟。',
-  SERVER_ERROR: '系統錯誤，請稍後再試。'
+  SERVER_ERROR: '系統錯誤，請稍後再試。',
+  RELOGIN: '正在重新登入…'
 };
 
 function say(text, type) {
@@ -85,7 +105,10 @@ async function api(action, data) {
       headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // 避免 CORS 預檢
       body: JSON.stringify(Object.assign({ action: action, idToken: liff.getIDToken() }, data || {}))
     });
-    return await res.json();
+    const j = await res.json();
+    if (!j.ok && j.error === 'AUTH_FAILED' && reloginOnce()) return { ok: false, error: 'RELOGIN' };
+    if (j.ok) { try { sessionStorage.removeItem('relogin'); } catch (e) {} }
+    return j;
   } catch (e) {
     return { ok: false, error: 'SERVER_ERROR' };
   } finally {
@@ -139,7 +162,8 @@ const redirecting = new URLSearchParams(location.search).has('liff.state');
 liff.init({ liffId: C.LIFF_ID })
   .then(() => {
     if (redirecting) return;
-    if (!liff.isLoggedIn()) { liff.login(); return; }
+    if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
+    if (!liff.isInClient() && tokenExpired()) { relogin(); return; }
     if (!liff.getIDToken()) { say('無法取得身分資訊，請確認 LIFF 已勾選 openid。', 'err'); return; }
     refresh();
   })

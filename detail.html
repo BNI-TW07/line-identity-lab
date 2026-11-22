@@ -46,6 +46,26 @@
 const C = window.APP_CONFIG;
 const $ = (id) => document.getElementById(id);
 const t0 = Date.now();
+let tInit = 0;
+
+// 一般瀏覽器（電腦）會沿用舊的登入資訊，憑證可能已過期：過期就重新登入
+function tokenExpired() {
+  const d = liff.getDecodedIDToken();
+  return !d || d.exp * 1000 < Date.now() + 60000;
+}
+function relogin() {
+  liff.logout();
+  liff.login({ redirectUri: location.href });
+}
+function reloginOnce() { // 後端仍判定失敗時，只自動重試一次，避免無限循環
+  if (liff.isInClient()) return false;
+  try {
+    if (sessionStorage.getItem('relogin')) return false;
+    sessionStorage.setItem('relogin', '1');
+  } catch (e) { return false; }
+  relogin();
+  return true;
+}
 
 function esc(v) {
   return String(v).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -58,6 +78,7 @@ function say(text, type) {
 
 async function load() {
   let r;
+  const tF0 = Date.now();
   try {
     const res = await fetch(C.GAS_URL, {
       method: 'POST',
@@ -71,7 +92,9 @@ async function load() {
     return;
   }
 
+  const tF1 = Date.now();
   if (!r.ok) {
+    if (r.error === 'AUTH_FAILED' && reloginOnce()) return;
     say(r.error === 'AUTH_FAILED'
       ? '身分驗證失敗或已逾時，請關閉此頁面後從 LINE 重新開啟。'
       : '系統錯誤，請稍後再試。', 'err');
@@ -106,12 +129,17 @@ async function load() {
 
   $('msg').hidden = true;
   $('content').hidden = false;
-  $('foot').textContent = '載入耗時 ' + (Date.now() - t0) + ' ms（研發測試用）';
+  try { sessionStorage.removeItem('relogin'); } catch (e) {}
+  const server = (r.timing && r.timing.serverMs) || 0;
+  $('foot').textContent = '總耗時 ' + (Date.now() - t0) + ' ms｜LIFF初始化 ' + tInit +
+    '｜後端 ' + server + '（身分驗證 ' + ((r.timing && r.timing.authMs) || 0) + '）｜網路與轉址 ' + (tF1 - tF0 - server) + '（研發測試用）';
 }
 
 liff.init({ liffId: C.LIFF_ID })
   .then(() => {
-    if (!liff.isLoggedIn()) { liff.login(); return; }
+    tInit = Date.now() - t0;
+    if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
+    if (!liff.isInClient() && tokenExpired()) { relogin(); return; }
     if (!liff.getIDToken()) { say('無法取得身分資訊。', 'err'); return; }
     load();
   })
