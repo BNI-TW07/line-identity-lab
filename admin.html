@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>資料上傳</title>
+<style>
+  body { margin: 0; font-family: system-ui, -apple-system, "Noto Sans TC", sans-serif; background: #f4f6f8; color: #222; }
+  main { max-width: 760px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: #777; margin: 0 0 12px; font-size: 14px; }
+  .chips span { display: inline-block; background: #e8f0fe; color: #1a56c4; border-radius: 12px; padding: 3px 10px; margin: 0 6px 6px 0; font-size: 13px; }
+  .msg { padding: 12px; border-radius: 8px; background: #fff; line-height: 1.6; margin-top: 12px; }
+  .msg.err { background: #fdecea; color: #a12622; }
+  .msg.ok { background: #e7f6ec; color: #1d6b38; }
+  .msg.warn { background: #fff4e0; color: #8a5300; }
+  .card { background: #fff; border-radius: 14px; padding: 16px; margin-top: 12px; }
+  textarea { width: 100%; box-sizing: border-box; height: 180px; font-family: monospace; font-size: 14px; padding: 10px; border: 1px solid #ccc; border-radius: 8px; }
+  .row { display: flex; gap: 10px; margin-top: 10px; }
+  button { flex: 1; font-size: 16px; padding: 12px; border: 0; border-radius: 8px; background: #2f6fde; color: #fff; }
+  button.go { background: #06c755; }
+  button:disabled { opacity: .45; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 10px; }
+  th, td { padding: 6px 4px; border-bottom: 1px solid #eee; text-align: center; }
+  th { color: #888; font-weight: normal; }
+  tr.bad td { background: #fdecea; }
+  .hint { font-size: 13px; color: #777; }
+  code { background: #f1f1f1; padding: 1px 4px; border-radius: 4px; }
+</style>
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script src="config.js"></script>
+</head>
+<body>
+<main>
+  <h1>資料上傳</h1>
+  <p class="sub" id="who">載入中…</p>
+  <div class="chips" id="roles"></div>
+  <div id="perm" class="msg" hidden></div>
+
+  <div class="card">
+    <p class="hint">從試算表選取範圍（含第一列標題）→ 複製 → 貼到下方。必要欄位：<span id="cols"></span></p>
+    <textarea id="text" placeholder="在這裡貼上…"></textarea>
+    <div class="row">
+      <button id="btnPreview">預覽與檢查</button>
+      <button id="btnCommit" class="go" disabled>確認上傳</button>
+    </div>
+  </div>
+
+  <div id="msg" class="msg" hidden></div>
+  <div class="card" id="previewBox" hidden><div style="overflow-x:auto"><table id="preview"></table></div></div>
+</main>
+<script>
+const C = window.APP_CONFIG;
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+const ERR = {
+  FORBIDDEN: '後端拒絕：您沒有上傳權限。',
+  NOT_BOUND: '您尚未綁定會員身分。',
+  INVALID_DATA: '資料有錯誤，請修正後再預覽。',
+  AUTH_FAILED: '身分驗證失敗，請關閉頁面後從 LINE 重新開啟。',
+  SERVER_ERROR: '系統錯誤，請稍後再試。'
+};
+let previewedText = null;
+
+function say(text, type) { $('msg').hidden = false; $('msg').textContent = text; $('msg').className = 'msg' + (type ? ' ' + type : ''); }
+function tokenExpired() { const d = liff.getDecodedIDToken(); return !d || d.exp * 1000 < Date.now() + 60000; }
+function relogin() { liff.logout(); liff.login({ redirectUri: location.href }); }
+function busy(on) { $('btnPreview').disabled = on; $('btnCommit').disabled = on || previewedText === null; }
+
+async function api(action, data) {
+  try {
+    const res = await fetch(C.GAS_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(Object.assign({ action: action, idToken: liff.getIDToken() }, data || {})) });
+    return await res.json();
+  } catch (e) { return { ok: false, error: 'SERVER_ERROR' }; }
+}
+
+function renderPreview(r) {
+  const bad = {};
+  (r.errors || []).forEach((e) => { bad[e.line] = e.msg; });
+  $('preview').innerHTML = '<tr><th>列</th>' + r.columns.map((c) => '<th>' + esc(c) + '</th>').join('') + '<th>檢查</th></tr>' +
+    (r.rows || []).map((row) => '<tr' + (bad[row.line] ? ' class="bad"' : '') + '><td>' + row.line + '</td>' +
+      r.columns.map((c) => '<td>' + esc(row.values[c]) + '</td>').join('') +
+      '<td>' + (bad[row.line] ? esc(bad[row.line]) : '✓') + '</td></tr>').join('');
+  $('previewBox').hidden = !(r.rows && r.rows.length);
+}
+
+$('text').oninput = () => { previewedText = null; $('btnCommit').disabled = true; };
+
+$('btnPreview').onclick = async () => {
+  busy(true);
+  const text = $('text').value;
+  const r = await api('uploadPreview', { text: text });
+  previewedText = null;
+  if (r.rows) renderPreview(r);
+  if (r.ok) {
+    previewedText = text;
+    say('檢查通過，共 ' + r.rows.length + ' 列。確認無誤請按「確認上傳」（同會員同期別的資料會被更新）。', 'ok');
+  } else {
+    const head = (r.errors || []).filter((e) => e.line <= 1).map((e) => e.msg).join('；');
+    say((ERR[r.error] || r.error) + (head ? '（' + head + '）' : ''), 'err');
+  }
+  busy(false);
+};
+
+$('btnCommit').onclick = async () => {
+  if (previewedText === null) return;
+  busy(true);
+  const r = await api('uploadCommit', { text: previewedText }); // 後端會重新檢查權限與資料
+  if (r.ok) {
+    say('上傳完成：新增 ' + r.added + ' 列、更新 ' + r.updated + ' 列。', 'ok');
+    previewedText = null;
+  } else {
+    say(ERR[r.error] || r.error, 'err');
+  }
+  busy(false);
+};
+
+liff.init({ liffId: C.LIFF_ID }).then(async () => {
+  if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
+  if (!liff.isInClient() && tokenExpired()) { relogin(); return; }
+  const r = await api('uploadCheck');
+  if (!r.ok) { $('who').textContent = ERR[r.error] || r.error; return; }
+  if (!r.bound) { $('who').textContent = ERR.NOT_BOUND; return; }
+  $('who').textContent = r.name;
+  $('roles').innerHTML = r.roles.map((x) => '<span>' + esc(x) + '</span>').join('');
+  $('cols').innerHTML = r.columns.map((c) => '<code>' + esc(c) + '</code>').join(' ');
+  $('perm').hidden = false;
+  if (r.allowed) {
+    $('perm').className = 'msg ok';
+    $('perm').textContent = '您有上傳權限。';
+  } else {
+    // 研發測試：刻意不隱藏表單，讓您實際送出、驗證後端會拒絕
+    $('perm').className = 'msg warn';
+    $('perm').textContent = '您沒有上傳權限。（研發測試：表單仍保留，可實際送出以驗證後端會拒絕）';
+  }
+}).catch((e) => { $('who').textContent = 'LIFF 初始化失敗：' + e.message; });
+</script>
+</body>
+</html>

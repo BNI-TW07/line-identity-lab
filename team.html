@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>夥伴總覽</title>
+<style>
+  body { margin: 0; font-family: system-ui, -apple-system, "Noto Sans TC", sans-serif; background: #f4f6f8; color: #222; }
+  main { max-width: 480px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: #777; margin: 0 0 12px; font-size: 14px; }
+  .chips span { display: inline-block; background: #e8f0fe; color: #1a56c4; border-radius: 12px; padding: 3px 10px; margin: 0 6px 6px 0; font-size: 13px; }
+  .msg { padding: 12px; border-radius: 8px; background: #fff; line-height: 1.5; }
+  .msg.err { background: #fdecea; color: #a12622; }
+  .card { background: #fff; border-radius: 14px; padding: 14px 16px; margin-top: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  th, td { padding: 10px 4px; text-align: left; border-bottom: 1px solid #eee; }
+  th { color: #888; font-weight: normal; font-size: 13px; }
+  .tag { display: inline-block; width: 12px; height: 12px; border-radius: 50%; vertical-align: middle; margin-right: 4px; }
+  .me { color: #06c755; font-size: 12px; margin-left: 4px; }
+  .foot { text-align: center; color: #bbb; font-size: 12px; margin-top: 12px; }
+  a.btn { display: block; text-align: center; margin-top: 12px; padding: 12px; border-radius: 8px; background: #06c755; color: #fff; text-decoration: none; }
+</style>
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script src="config.js"></script>
+</head>
+<body>
+<main>
+  <h1>夥伴總覽</h1>
+  <p class="sub" id="who"></p>
+  <div class="chips" id="roles"></div>
+  <div id="msg" class="msg">載入中…</div>
+  <div class="card" id="content" hidden><table id="list"></table></div>
+  <p class="foot" id="foot"></p>
+</main>
+<script>
+const C = window.APP_CONFIG;
+const $ = (id) => document.getElementById(id);
+const t0 = Date.now();
+const esc = (v) => String(v).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+function say(text, type) { $('msg').hidden = false; $('msg').textContent = text; $('msg').className = 'msg' + (type ? ' ' + type : ''); }
+function tokenExpired() { const d = liff.getDecodedIDToken(); return !d || d.exp * 1000 < Date.now() + 60000; }
+function relogin() { liff.logout(); liff.login({ redirectUri: location.href }); }
+
+async function load() {
+  let r;
+  try {
+    const res = await fetch(C.GAS_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'teamView', idToken: liff.getIDToken() }) }); // 不傳任何範圍參數，範圍由後端依角色表決定
+    r = await res.json();
+  } catch (e) { say('連線失敗，請稍後再試。', 'err'); return; }
+  if (!r.ok) { say(r.error === 'AUTH_FAILED' ? '身分驗證失敗，請關閉頁面後從 LINE 重新開啟。' : '系統錯誤，請稍後再試。', 'err'); return; }
+  if (!r.bound) { $('msg').innerHTML = '您尚未綁定會員身分。<a class="btn" href="https://liff.line.me/' + esc(C.LIFF_ID) + '">前往綁定</a>'; return; }
+
+  $('who').textContent = r.name + '｜依您的角色，可查看 ' + r.list.length + ' 位夥伴';
+  $('roles').innerHTML = r.roles.map((x) => '<span>' + esc(x) + '</span>').join('');
+  const color = (s) => r.colors[s] || '#ccc';
+  $('list').innerHTML = '<tr><th>姓名</th><th>最新期別</th><th>燈號</th><th>' + esc(r.scoreLabel) + '</th></tr>' +
+    r.list.map((p) => '<tr><td>' + esc(p.name) + (p.self ? '<span class="me">（我）</span>' : '') + '</td><td>' + esc(p.period) +
+      '</td><td>' + (p.status ? '<span class="tag" style="background:' + color(p.status) + '"></span>' + esc(p.status) : '-') +
+      '</td><td>' + esc(p.score) + '</td></tr>').join('');
+  $('msg').hidden = true;
+  $('content').hidden = false;
+  $('foot').textContent = '載入耗時 ' + (Date.now() - t0) + ' ms（研發測試用）';
+}
+
+liff.init({ liffId: C.LIFF_ID }).then(() => {
+  if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
+  if (!liff.isInClient() && tokenExpired()) { relogin(); return; }
+  load();
+}).catch((e) => say('LIFF 初始化失敗：' + e.message, 'err'));
+</script>
+</body>
+</html>
