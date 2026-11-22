@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>我的資料</title>
+<style>
+  body { margin: 0; font-family: system-ui, -apple-system, "Noto Sans TC", sans-serif; background: #f4f6f8; color: #222; }
+  main { max-width: 480px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: #777; margin: 0 0 16px; font-size: 14px; }
+  .msg { padding: 12px; border-radius: 8px; background: #fff; line-height: 1.5; }
+  .msg.err { background: #fdecea; color: #a12622; }
+  .card { background: #fff; border-radius: 14px; padding: 18px; margin-bottom: 16px; }
+  .light { display: flex; align-items: center; gap: 12px; font-size: 28px; font-weight: bold; }
+  .dot { width: 34px; height: 34px; border-radius: 50%; }
+  .grid { display: grid; grid-template-columns: 1fr auto; gap: 8px 12px; margin-top: 14px; font-size: 15px; }
+  .grid .k { color: #888; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { padding: 8px 4px; text-align: center; border-bottom: 1px solid #eee; }
+  th { color: #888; font-weight: normal; }
+  .tag { display: inline-block; width: 12px; height: 12px; border-radius: 50%; vertical-align: middle; margin-right: 4px; }
+  h2 { font-size: 16px; margin: 0 0 10px; }
+  .foot { text-align: center; color: #bbb; font-size: 12px; margin-top: 12px; }
+  a.btn { display: block; text-align: center; margin-top: 12px; padding: 12px; border-radius: 8px; background: #06c755; color: #fff; text-decoration: none; }
+</style>
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script src="config.js"></script>
+</head>
+<body>
+<main>
+  <h1 id="title">我的資料</h1>
+  <p class="sub" id="who"></p>
+  <div id="msg" class="msg">載入中…</div>
+  <div id="content" hidden>
+    <div class="card" id="latest"></div>
+    <div class="card">
+      <h2>歷史紀錄</h2>
+      <div style="overflow-x:auto"><table id="history"></table></div>
+    </div>
+  </div>
+  <p class="foot" id="foot"></p>
+</main>
+
+<script>
+const C = window.APP_CONFIG;
+const $ = (id) => document.getElementById(id);
+const t0 = Date.now();
+
+function esc(v) {
+  return String(v).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+function say(text, type) {
+  $('msg').hidden = false;
+  $('msg').textContent = text;
+  $('msg').className = 'msg' + (type ? ' ' + type : '');
+}
+
+async function load() {
+  let r;
+  try {
+    const res = await fetch(C.GAS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      // 只送出 ID token：查誰的資料由後端依 token 決定，前端無法指定
+      body: JSON.stringify({ action: 'myResults', idToken: liff.getIDToken() })
+    });
+    r = await res.json();
+  } catch (e) {
+    say('連線失敗，請稍後再試。', 'err');
+    return;
+  }
+
+  if (!r.ok) {
+    say(r.error === 'AUTH_FAILED'
+      ? '身分驗證失敗或已逾時，請關閉此頁面後從 LINE 重新開啟。'
+      : '系統錯誤，請稍後再試。', 'err');
+    return;
+  }
+  if (!r.bound) {
+    $('msg').innerHTML = '您尚未綁定會員身分。<a class="btn" href="https://liff.line.me/' + esc(C.LIFF_ID) + '">前往綁定</a>';
+    return;
+  }
+
+  $('title').textContent = r.title;
+  $('who').textContent = r.name;
+  if (!r.rows.length) { say('目前查無您的資料。'); return; }
+
+  const color = (s) => r.colors[s] || '#999';
+  const latest = r.rows[0];
+  $('latest').innerHTML =
+    '<div class="sub">最新一期：' + esc(latest.period) + '</div>' +
+    '<div class="light"><span class="dot" style="background:' + color(latest.status) + '"></span>' +
+    '<span style="color:' + color(latest.status) + '">' + esc(latest.status) + '燈</span></div>' +
+    '<div class="grid">' +
+    r.columns.map((c, i) => '<span class="k">' + esc(c) + '</span><span>' + esc(latest.values[i]) + '</span>').join('') +
+    '</div>';
+
+  $('history').innerHTML =
+    '<tr><th>期別</th><th>燈號</th>' + r.columns.map((c) => '<th>' + esc(c) + '</th>').join('') + '</tr>' +
+    r.rows.map((row) =>
+      '<tr><td>' + esc(row.period) + '</td>' +
+      '<td><span class="tag" style="background:' + color(row.status) + '"></span>' + esc(row.status) + '</td>' +
+      row.values.map((v) => '<td>' + esc(v) + '</td>').join('') + '</tr>'
+    ).join('');
+
+  $('msg').hidden = true;
+  $('content').hidden = false;
+  $('foot').textContent = '載入耗時 ' + (Date.now() - t0) + ' ms（研發測試用）';
+}
+
+liff.init({ liffId: C.LIFF_ID })
+  .then(() => {
+    if (!liff.isLoggedIn()) { liff.login(); return; }
+    if (!liff.getIDToken()) { say('無法取得身分資訊。', 'err'); return; }
+    load();
+  })
+  .catch((e) => say('LIFF 初始化失敗：' + e.message, 'err'));
+</script>
+</body>
+</html>

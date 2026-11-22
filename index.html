@@ -133,8 +133,12 @@ $('btnUnbind').onclick = async () => {
   refresh('已解除綁定。');
 };
 
+// 從 liff.line.me/{id}/detail.html 開啟時，LINE 會先載入本頁再轉到 detail.html；這時不做任何事
+const redirecting = new URLSearchParams(location.search).has('liff.state');
+
 liff.init({ liffId: C.LIFF_ID })
   .then(() => {
+    if (redirecting) return;
     if (!liff.isLoggedIn()) { liff.login(); return; }
     if (!liff.getIDToken()) { say('無法取得身分資訊，請確認 LIFF 已勾選 openid。', 'err'); return; }
     refresh();
